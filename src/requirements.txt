@@ -1,0 +1,4 @@
+pycti==6.8.11
+stix2~=3.0
+PyYAML~=6.0
+requests~=2.32

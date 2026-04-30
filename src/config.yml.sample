@@ -1,0 +1,23 @@
+opencti:
+  url: 'http://opencti:8080'
+  token: 'CHANGEME-OPENCTI-ADMIN-TOKEN'
+
+connector:
+  id: 'CHANGEME-UUID-V4'
+  type: 'INTERNAL_ENRICHMENT'
+  name: 'Ransomware.live PRO (enrichment)'
+  scope: 'Intrusion-Set,Threat-Actor-Group'
+  log_level: 'info'
+  auto: false   # set true to auto-enrich on every IntrusionSet creation/update
+
+ransomwareliveepro:
+  api_base_url: 'https://api-pro.ransomware.live'
+  api_key: 'CHANGEME-YOUR-RANSOMWARELIVE-PRO-KEY'
+  collect_iocs: true
+  collect_yara: true
+  collect_ransomnotes: true
+  ioc_type_filter: ''   # 'ipv4,domain,sha256' or empty for all
+  create_indicators: true
+  tlp_level: 'green'
+  confidence_level: 75
+  update_existing: 'update'   # skip | update | force

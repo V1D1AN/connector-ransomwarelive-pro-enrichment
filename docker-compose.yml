@@ -1,0 +1,38 @@
+version: '3'
+
+services:
+  connector-ransomwarelive-pro-enrichment:
+    image: opencti/connector-ransomwarelive-pro-enrichment:1.0.0
+    # Or build locally:
+    # build: .
+    environment:
+      # ---- OpenCTI core ----
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      # ---- Connector core ----
+      - CONNECTOR_ID=CHANGEME-UUID-V4
+      - CONNECTOR_TYPE=INTERNAL_ENRICHMENT
+      - CONNECTOR_NAME=Ransomware.live PRO (enrichment)
+      # Comma-separated entity types that can trigger this connector.
+      - CONNECTOR_SCOPE=Intrusion-Set,Threat-Actor-Group
+      - CONNECTOR_AUTO=false   # true = auto-enrich every new IntrusionSet
+      - CONNECTOR_LOG_LEVEL=info
+      # ---- Ransomware.live PRO ----
+      - RANSOMWARELIVEPRO_API_BASE_URL=https://api-pro.ransomware.live
+      - RANSOMWARELIVEPRO_API_KEY=${RANSOMWARELIVE_PRO_API_KEY}
+      - RANSOMWARELIVEPRO_COLLECT_IOCS=true
+      - RANSOMWARELIVEPRO_COLLECT_YARA=true
+      - RANSOMWARELIVEPRO_COLLECT_RANSOMNOTES=true
+      - RANSOMWARELIVEPRO_IOC_TYPE_FILTER=
+      - RANSOMWARELIVEPRO_CREATE_INDICATORS=true
+      - RANSOMWARELIVEPRO_TLP_LEVEL=green
+      - RANSOMWARELIVEPRO_CONFIDENCE_LEVEL=75
+      - RANSOMWARELIVEPRO_UPDATE_EXISTING=update
+    restart: always
+    networks:
+      - opencti-net
+
+networks:
+  opencti-net:
+    external: true
+    name: opencti_default
