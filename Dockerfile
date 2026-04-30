@@ -6,7 +6,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        build-essential git ca-certificates && \
+        build-essential libmagic-dev git ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/connector
