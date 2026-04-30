@@ -76,8 +76,21 @@ class RansomwareLiveProClient:
         backoff_factor: float = 1.5,
         logger=None,
     ) -> None:
+        # Strip whitespace defensively — .env files and YAML often introduce
+        # leading/trailing spaces or stray newlines that break HTTP headers.
+        api_key = (api_key or "").strip()
+        base_url = (base_url or "").strip()
+
         if not api_key:
             raise ValueError("Ransomware.live PRO API key is required.")
+        # Reject keys that contain whitespace anywhere — they will be silently
+        # rejected by `requests`' header validator otherwise.
+        if any(c.isspace() for c in api_key):
+            raise ValueError(
+                "Ransomware.live PRO API key contains whitespace. "
+                "Check your .env or config.yml — there must be no space "
+                "around the '=' sign and no embedded newlines."
+            )
 
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
@@ -134,20 +147,32 @@ class RansomwareLiveProClient:
                 f"Network error calling {url}: {exc}"
             ) from exc
 
+        if self.logger:
+            self.logger.debug(
+                f"[ransomwarelive-pro] GET {url} -> "
+                f"HTTP {response.status_code} "
+                f"({len(response.content)} bytes)"
+            )
+
         if response.status_code == 401:
             raise RansomwareLiveProAPIError(
-                "API key rejected (HTTP 401). Check RANSOMWARELIVEPRO_API_KEY."
+                f"API key rejected (HTTP 401) on {url}. "
+                f"Check RANSOMWARELIVEPRO_API_KEY at https://my.ransomware.live. "
+                f"Body: {response.text[:200]}"
             )
         if response.status_code == 403:
             raise RansomwareLiveProAPIError(
                 f"Access forbidden (HTTP 403) for {url}. "
-                "Your key may not have the required entitlements."
+                f"Your key may not have the required entitlements. "
+                f"Body: {response.text[:200]}"
             )
         if response.status_code == 404:
             # Many endpoints return 404 when no data exists for a group; treat
             # as empty rather than fatal.
             if self.logger:
-                self.logger.debug(f"[ransomwarelive-pro] 404 on {url}, returning None")
+                self.logger.debug(
+                    f"[ransomwarelive-pro] 404 on {url}, returning None"
+                )
             return None
         if response.status_code >= 400:
             raise RansomwareLiveProAPIError(
@@ -169,16 +194,94 @@ class RansomwareLiveProClient:
 
     # ------------------------------------------------------------ public API
     def validate(self) -> bool:
-        """Confirm the API key is active. Returns True on success."""
-        result = self._get("validate")
-        if result is None:
+        """Confirm the API key is active.
+
+        Strategy: try /validate first (cheap, dedicated endpoint). If the API
+        does not expose it (404) or returns an unexpected shape, fall back to
+        a lightweight call on /groups which we KNOW exists. The fallback
+        succeeds as long as we get a 2xx with a list-shaped payload.
+
+        Raises RansomwareLiveProAPIError on auth errors (401/403) so the
+        caller can surface the real reason instead of a vague "failed".
+        """
+        # ---- Attempt 1: dedicated /validate endpoint ------------------
+        try:
+            result = self._get("validate")
+            if isinstance(result, dict):
+                # Accept any of these auth-ok shapes:
+                #   {"valid": true}
+                #   {"status": "ok"} | {"status": "valid"} | {"status": "active"}
+                #   {"ok": true}
+                #   {"authenticated": true}
+                status = str(result.get("status") or "").lower()
+                if (
+                    result.get("valid") is True
+                    or status in ("ok", "valid", "active", "authenticated")
+                    or result.get("ok") is True
+                    or result.get("authenticated") is True
+                ):
+                    if self.logger:
+                        client_id = result.get("client") or result.get("user") or ""
+                        suffix = f" (client: {client_id})" if client_id else ""
+                        self.logger.info(
+                            f"[ransomwarelive-pro] /validate confirms key{suffix}"
+                        )
+                    return True
+                # Endpoint replied but not in a shape we recognise — log it
+                # and fall through to the fallback so we don't false-negative.
+                if self.logger:
+                    self.logger.warning(
+                        "[ransomwarelive-pro] /validate returned unexpected "
+                        f"shape, falling back to /groups probe: {result!r}"
+                    )
+            elif result is None:
+                # 404 — endpoint not exposed on this tier. Fall through.
+                if self.logger:
+                    self.logger.info(
+                        "[ransomwarelive-pro] /validate not available, "
+                        "probing /groups instead"
+                    )
+        except RansomwareLiveProAPIError as exc:
+            # Auth errors are fatal; bubble them up.
+            msg = str(exc)
+            if "401" in msg or "403" in msg or "rejected" in msg:
+                raise
+            # Other errors — log and fall through to the probe.
+            if self.logger:
+                self.logger.warning(
+                    f"[ransomwarelive-pro] /validate errored, "
+                    f"falling back to /groups probe: {exc}"
+                )
+
+        # ---- Attempt 2: probe /groups ---------------------------------
+        # Use _ensure_list to coerce dict-wrapped payloads (e.g. {"groups":
+        # [...]}) into a list — same logic as everywhere else in the client.
+        try:
+            raw = self._get("groups_list")
+        except RansomwareLiveProAPIError:
+            raise
+        if raw is None:
+            if self.logger:
+                self.logger.error(
+                    "[ransomwarelive-pro] /groups returned no data (404 or "
+                    "empty). Verify RANSOMWARELIVEPRO_API_BASE_URL."
+                )
             return False
-        # Tolerate either {"valid": true} or {"status": "ok"} shapes.
-        if isinstance(result, dict):
-            return bool(
-                result.get("valid")
-                or result.get("status") == "ok"
-                or result.get("ok") is True
+        groups = _ensure_list(raw)
+        if groups:
+            if self.logger:
+                self.logger.info(
+                    f"[ransomwarelive-pro] /groups probe OK "
+                    f"({len(groups)} groups visible)"
+                )
+            return True
+        # Empty list is suspicious but not fatal — could be a transient empty
+        # response. Treat as success so the connector continues; collectors
+        # will handle empty data downstream.
+        if self.logger:
+            self.logger.warning(
+                f"[ransomwarelive-pro] /groups returned empty payload "
+                f"(raw type: {type(raw).__name__}). Continuing anyway."
             )
         return True
 
@@ -312,17 +415,43 @@ class RansomwareLiveProClient:
 
 # ----------------------------------------------------------------- helpers
 def _ensure_list(payload: Any) -> List[Any]:
-    """Coerce API responses to a list. PRO API mixes list/dict shapes."""
+    """Coerce API responses to a list. The PRO API mixes shapes:
+
+    * `[...]`                          → returned as-is
+    * `{"data": [...]}`                → unwrapped to inner list
+    * `{"results": [...]}`             → unwrapped
+    * `{"items": [...]}` / `{"victims": [...]}` / `{"groups": [...]}` → unwrapped
+    * `{"LockBit": {...}, "Akira": {...}}` → values flattened, name folded in
+    * Single record dict                → wrapped in a one-element list
+    """
     if payload is None:
         return []
     if isinstance(payload, list):
         return payload
     if isinstance(payload, dict):
-        # Common patterns: {"data": [...]}, {"results": [...]}, {"items": [...]}
+        if not payload:
+            return []
+        # Common wrappers
         for key in ("data", "results", "items", "victims", "groups"):
             if key in payload and isinstance(payload[key], list):
                 return payload[key]
-        # Fallback: wrap the dict in a single-element list.
+
+        # Dict-of-records pattern (e.g. /groups returning
+        # {"LockBit": {profile…}, "Akira": {profile…}}). Detect by checking
+        # all values are dicts and none of the recognized scalar metadata
+        # keys are present at the top level.
+        values = list(payload.values())
+        if values and all(isinstance(v, dict) for v in values):
+            # Likely indexed-by-name. Fold the key into each record under
+            # `name` so downstream converters work uniformly.
+            flattened: List[Dict[str, Any]] = []
+            for name, record in payload.items():
+                merged = dict(record)
+                merged.setdefault("name", name)
+                flattened.append(merged)
+            return flattened
+
+        # Fallback: treat the dict as a single record.
         return [payload]
     return []
 

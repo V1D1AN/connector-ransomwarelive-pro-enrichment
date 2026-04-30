@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- API client now strips leading/trailing whitespace and newlines from `RANSOMWARELIVEPRO_API_KEY` and `RANSOMWARELIVEPRO_API_BASE_URL`. Previously, a stray space after `=` in `.env` files caused the connector to fail at startup with `requests.exceptions.InvalidHeader`. Embedded whitespace is now rejected at construction time with a clear error message.
+- `validate()` no longer fails silently when the API does not expose a `/validate` endpoint. It now falls back to a `/groups` probe, distinguishes auth errors (401/403) from missing-endpoint errors (404), and surfaces the actual HTTP status and response body in error messages.
+- `validate()` now accepts the actual upstream response shape (`{"status": "valid", "client": "<email>"}`) in addition to other common variants (`{"valid": true}`, `{"status": "ok"}`, `{"ok": true}`, `{"authenticated": true}`). The authenticated client email is logged for confirmation.
+- `_ensure_list()` now flattens the dict-of-records payload returned by `/groups` (e.g. `{"LockBit": {…}, "Akira": {…}}`), folding the dict key into each record as a `name` field. Previously this 18 KB payload was treated as a single record, breaking the validation probe.
+- Dockerfile now installs `libmagic1` (kept at runtime) and `libmagic-dev` (purged after build), required by `python-magic` — a transitive dependency of `pycti` used for file type detection.
+
+### Changed
+
+- HTTP layer: every request now logs `URL → HTTP status (bytes)` at debug level. 401/403 errors include the response body (truncated to 200 chars) for easier diagnostics.
+
 ## [1.0.0] - 2026-04-29
 
 ### Added
